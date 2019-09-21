@@ -11,6 +11,14 @@ data work.insurance_t;
 	if hmown = . then hmown = 2;
 run;
 
+data work.insurance_v;
+	set log.insurance_v_bin;
+	if cc = . then cc = 2;
+	if ccpurc = . then ccpurc = 5;
+	if inv = . then inv = 2;
+	if hmown = . then hmown = 2;
+run;
+
 *cross-freq tables for all variables with INS;
 proc freq data = work.insurance_t;
 	tables ins*(_all_);
@@ -74,10 +82,10 @@ run;
 ods trace on;
 proc logistic data = work.insurance_t plots = ROC outmodel = log.intmodel;
 	class _all_;
-	model ins = &maineffects &interactions @2
+	model ins (event ='1')= &maineffects &interactions @2
 		/ selection = forward slentry = 0.002 clodds=pl clparm=pl
 			ctable pprob = 0  to 0.98 by 0.02;
-	score data = log.insurance_v_bin out=work.scores;
+	score data = work.insurance_v out=work.scores fitstat outroc=roc;
 	ods output classification = classtable;
 	ods output parameterestimates = work.oddsratiosint;
 	ods output modelANOVA = work.Type3;
@@ -94,7 +102,9 @@ proc ttest data = predprobs order=data;
 	class INS;
 	var phat;
 	title 'Coefficient of Discrimination and plots';
+	ods output summarypanel = Summarypanel;
 run;
+
 ods trace off;
 
 *ks statistic;
@@ -106,7 +116,7 @@ run;
 *scoring on validation data / creating scored;
 data work.ctable;
 	set work.scores;
-	do i = 0 to 1 by .01;
+	do i = 0 to 1 by .001;
 		if P_1 > i then predevent = 1;
 			else predevent = 0;
 		if predevent = 1 and INS = 1 then TP = 1;
@@ -121,23 +131,64 @@ data work.ctable;
 	end;
 run;
 
+*create confusion dataset;
 proc means data=ctable mean;
 	class i;
 	vars predevent TP FP TN FN;
 	output out=work.confusion;
 run;
 
+proc sort data= ctable;
+	by i;
+run;
+
+/*
+proc freq data=ctable;
+	table tp fp tn fn;
+	by i;
+run;
+*/
+
+proc means data=log.insurance_t_bin;
+	var ins;
+run;
+
+*calculate goodness of fit statistics;
 data accuracies;
 	set work.confusion;
 		where _stat_ = 'MEAN';
 	accuracy = ((TP + TN)/(TP + TN + FP + FN));
+	sensitivity=((TP)/(TP + FN));
+	specificity=((TN)/(TN + FP));
+	J = sensitivity + specificity -1;
+	Lift = sensitivity / 0.3434962 ;
+	depth = TP + FP;
+run;	
+
+proc sgplot data=accuracies;
+	series x=depth y=Lift;
 run;
 
+*calculate goodness of fit stats for each threshold level: i;
 proc means data = accuracies mean;
 	class i;
-	vars accuracy predevent TP TN FP FN;
+	vars accuracy predevent TP TN FP FN sensitivity specificity J;
 run;
 
+*Lift Chart;
+data work.roc;
+	set work.roc;
+	cutoff = _PROB_;
+	specif = 1 - _1MSPEC_;
+	depth = (_POS_+_FALPOS_)/8495*100;
+	precision=_POS_/(_POS_+_FALPOS_);
+	acc=_POS_+_NEG_;
+	lift=precision/0.3434962;
+run; 
+
+proc sgplot data=roc;
+	series x=depth y=lift;
+run;
 
 *sort by p-vaule and export odds ratios for main effects + interaction effects;
 proc sort data=oddsratiosint out=oddsratiosintsort;
